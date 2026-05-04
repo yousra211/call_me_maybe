@@ -118,6 +118,8 @@ def update_state(state: str, decoded: str, after_name_value: bool) -> tuple:
             state = "INSIDE_STRING_VALUE"
         elif decoded.isdigit():
             state = "INSIDE_NUMBER_VALUE"
+        elif decoded == '{':
+            state = "AFTER_OPEN_BRACE"
 
     elif state == "INSIDE_STRING_VALUE" and decoded == '"':
         state = "AFTER_VALUE"
@@ -140,6 +142,9 @@ def update_state(state: str, decoded: str, after_name_value: bool) -> tuple:
             state = "INSIDE_KEY"
         elif decoded == '}':
             state = "DONE"
+
+    elif state == "INSIDE_KEY" and decoded == '"':
+        state = "AFTER_KEY"
     return state, after_name_value
 
 while True:
@@ -152,6 +157,7 @@ while True:
         if i not in valid_ids:
             logits[i] = float('-inf')
     index_token = int(np.argmax(logits))
+    decoded = my_model.decode([index_token])
 
     mylist.append(index_token)
     generated_ids.append(index_token)
@@ -162,7 +168,7 @@ while True:
     if state == "INSIDE_SECOND_KEY":
         current_key = "parameters"
 
-    if state == "AFTER_VALUE" or state == "AFTER_OPEN_BRACE":
+    if state == "AFTER_VALUE" or state == "AFTER_OPEN_BRACE" or (state == "INSIDE_SECOND_KEY" and decoded == '"'):
         current_key_ids = []
 
     if state == "INSIDE_KEY":
@@ -191,7 +197,7 @@ while True:
     if index_token == eos_token_id:
         break
 
-    decoded = my_model.decode([index_token])
+
     print(f"Generated token: '{decoded}'") 
     # if decoded == "{":
     #     open_brackets += 1
@@ -199,9 +205,9 @@ while True:
     #     open_brackets -= 1
     #     if open_brackets == 0:
     #         break
+    state, after_name_value = update_state(state, decoded, after_name_value)
     if state == "DONE":
         break
-    state, after_name_value = update_state(state, decoded, after_name_value)
 result = "{" + my_model.decode(generated_ids) + "}"
 print(result)
 
