@@ -82,20 +82,24 @@ result = "{" + my_model.decode(generated_ids) + "}"
 print(result)
 
 
-# def update_state(state: str, decoded: str) -> str:
-#     if state == "START" and decoded == "{":
-#         state = "AFTER_OPEN_BRACE"
+def update_state(state: str, decoded: str) -> str:
+    if state == "START" and decoded == "{":
+        state = "AFTER_OPEN_BRACE"
     
-#     elif state == "AFTER_OPEN_BRACE" and decoded == '"':
-#         state = "INSIDE_KEY"
+    elif state == "AFTER_OPEN_BRACE" and decoded == '"':
+        state = "INSIDE_FIRST_KEY"
     
-#     elif state == "INSIDE_KEY" and decoded == '"':
-#         state = "AFTER_KEY"
+    elif state == "INSIDE_FIRST_KEY" and decoded == '"':
+        state = "AFTER_KEY"
     
-#     elif state == "AFTER_KEY" and decoded == ":":
-#         state = "AFTER_COLON"
+    elif state == "AFTER_KEY" and decoded == ":":
+        state = "AFTER_COLON"
     
-#     elif state == "AFTER_COLON":
-#         if decoded == ",":
-#             state == "AFTER_OPEN_BRACE"
-#         elif decoded == "}":
+    elif state == "AFTER_COLON":
+        if decoded == '"':
+            state == "INSIDE_STRING_VALUE"
+        elif decoded.isdigit():
+            state == "INSIDE_NUMBER_VALUE"
+
+    elif state == "INSIDE_STRING_VALUE" and decoded == '"':
+        state == "AFTER_VALUE"
