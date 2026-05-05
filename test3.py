@@ -2,6 +2,9 @@ import json
 from llm_sdk import llm_sdk
 import numpy as np
 
+global functions_definition
+global current_key
+
 with open('function_calling_tests.json', 'r') as f:
     data = json.load(f)
 
@@ -30,7 +33,6 @@ Now return the correct JSON for this request: {data[0]['prompt']}
 {{"""
 encoded = my_model.encode(prompt)
 mylist = encoded[0].tolist()
-# open_brackets = 0
 eos_token_id = my_model.encode("<|endoftext|>").tolist()[0]
 
 generated_ids = []
@@ -42,6 +44,7 @@ with open(vocab_path, 'r') as f:
 
 # invert it to get id → token
 id_to_token = {v: k for k, v in vocab.items()}
+
 state = "START"
 function_name_ids = []
 selected_function = None
@@ -54,13 +57,15 @@ def get_valid_tokens(state: str, vocab: dict, expected_type) -> list:
     valid_ids = []
     if state == "START":
         valid_ids.append(vocab['{'])
+
     elif state == "AFTER_OPEN_BRACE":
         valid_ids.append(vocab['"'])
+
     elif state == "INSIDE_FIRST_KEY":
-        valid_ids.extend(my_model.encode('"name"')[0].tolist())
+        valid_ids.extend(my_model.encode('name"')[0].tolist())
+
     elif state == "AFTER_KEY":
         valid_ids.append(vocab[':'])
-
 
     elif state == "AFTER_COLON":
         if expected_type == "string":
@@ -76,21 +81,28 @@ def get_valid_tokens(state: str, vocab: dict, expected_type) -> list:
             valid_ids.append(vocab['{'])
 
     elif state == "INSIDE_STRING_VALUE":
-        for token in vocab.keys():
-            if not any(c in token for c in ['\n', '\r', '}', '{', ':']):
-                valid_ids.append(vocab[token])
-    elif state == "INSIDE_NUMBER_VALUE":
+        if current_key == "name":
             for token in vocab.keys():
-                if all(c.isdigit() or c == '.' for c in token):
+                if (token in func for func in [f["name"] for f in functions_definition]):
                     valid_ids.append(vocab[token])
-            valid_ids.append(vocab[','])
-            valid_ids.append(vocab['}'])
+        else:
+            for token in vocab.keys():
+                if not any(c in token for c in ['\n', '\r', '}', '{', ':', ","]):
+                    valid_ids.append(vocab[token])
+
+    elif state == "INSIDE_NUMBER_VALUE":
+        for token in vocab.keys():
+            if all(c.isdigit() or c == '.' for c in token):
+                valid_ids.append(vocab[token])
+        valid_ids.append(vocab[','])
+        valid_ids.append(vocab['}'])
+
     elif state == "AFTER_VALUE":
         valid_ids.append(vocab[','])
         valid_ids.append(vocab['}'])
 
     elif state == "INSIDE_SECOND_KEY":
-        valid_ids.extend(my_model.encode('"parameters"')[0].tolist())
+        valid_ids.extend(my_model.encode('parameters"')[0].tolist())
 
     elif state == "INSIDE_KEY":
         for token in vocab.keys():
@@ -103,16 +115,16 @@ def get_valid_tokens(state: str, vocab: dict, expected_type) -> list:
 def update_state(state: str, decoded: str, after_name_value: bool) -> tuple:
     if state == "START" and decoded == "{":
         state = "AFTER_OPEN_BRACE"
-    
+
     elif state == "AFTER_OPEN_BRACE" and decoded == '"':
         state = "INSIDE_FIRST_KEY"
-    
+
     elif state == "INSIDE_FIRST_KEY" and decoded == '"':
         state = "AFTER_KEY"
-    
+
     elif state == "AFTER_KEY" and decoded == ":":
         state = "AFTER_COLON"
-    
+
     elif state == "AFTER_COLON":
         if decoded == '"':
             state = "INSIDE_STRING_VALUE"
@@ -145,17 +157,20 @@ def update_state(state: str, decoded: str, after_name_value: bool) -> tuple:
 
     elif state == "INSIDE_KEY" and decoded == '"':
         state = "AFTER_KEY"
+
     return state, after_name_value
 
 while True:
     logits = my_model.get_logits_from_input_ids(mylist)
+
     # 1. find valid token IDs based on current state
     valid_ids = get_valid_tokens(state, vocab, expected_type)
-    
+
     # 2. kill invalid tokens
     for i in range(len(logits)):
         if i not in valid_ids:
             logits[i] = float('-inf')
+
     index_token = int(np.argmax(logits))
     decoded = my_model.decode([index_token])
 
@@ -171,7 +186,7 @@ while True:
     if state == "AFTER_VALUE" or state == "AFTER_OPEN_BRACE" or (state == "INSIDE_SECOND_KEY" and decoded == '"'):
         current_key_ids = []
 
-    if state == "INSIDE_KEY":
+    if state in ["INSIDE_FIRST_KEY", "INSIDE_SECOND_KEY", "INSIDE_KEY"] and decoded != '"':
         current_key_ids.append(index_token)
 
     if state == "AFTER_KEY":
@@ -179,12 +194,23 @@ while True:
 
     if state == "INSIDE_STRING_VALUE" and selected_function is None:
         function_name_ids.append(index_token)
+
+    if index_token == eos_token_id:
+        break
+    print(f"Generated token: '{decoded}'")
     
+    if state == "AFTER_COLON":
+        print(f"current_key: {current_key}")
+        print(f"expected_type: {expected_type}")
+
+    state, after_name_value = update_state(state, decoded, after_name_value)
+
     if state == "AFTER_VALUE" and selected_function is None:
         function_name = my_model.decode(function_name_ids)
-        selected_function = next(f for f in functions_definition if f['name'] == function_name)
-        param_names = list(selected_function["parameters"].keys())
-        param_types = {k: v["type"] for k, v in selected_function["parameters"].items()}
+        print(f"function name: {function_name}")
+        # selected_function = next(f for f in functions_definition if f['name'] == function_name)
+        # param_names = list(selected_function["parameters"].keys())
+        # param_types = {k: v["type"] for k, v in selected_function["parameters"].items()}
 
     if state == "AFTER_COLON":
         if current_key == "name":
@@ -194,20 +220,8 @@ while True:
         elif selected_function and current_key in param_types:
             expected_type = param_types[current_key]
 
-    if index_token == eos_token_id:
-        break
-
-
-    print(f"Generated token: '{decoded}'") 
-    # if decoded == "{":
-    #     open_brackets += 1
-    # elif decoded == "}":
-    #     open_brackets -= 1
-    #     if open_brackets == 0:
-    #         break
-    state, after_name_value = update_state(state, decoded, after_name_value)
     if state == "DONE":
         break
+
 result = "{" + my_model.decode(generated_ids) + "}"
 print(result)
-
