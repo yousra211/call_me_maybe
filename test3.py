@@ -5,6 +5,7 @@ import numpy as np
 global functions_definition
 global current_key
 global function_name_ids
+global after_name_value
 
 with open('function_calling_tests.json', 'r') as f:
     data = json.load(f)
@@ -60,10 +61,11 @@ def get_valid_tokens(state: str, vocab: dict, expected_type) -> list:
         my_model.encode(f["name"])[0].tolist()
         for f in functions_definition
     ]
+
     if state == "START":
         valid_ids.append(vocab['{'])
 
-    elif state == "AFTER_OPEN_BRACE":
+    elif state == "AFTER_OPEN_BRACE" or state == "AFTER_COMMA":
         valid_ids.append(vocab['"'])
 
     elif state == "INSIDE_FIRST_KEY":
@@ -87,15 +89,6 @@ def get_valid_tokens(state: str, vocab: dict, expected_type) -> list:
 
     elif state == "INSIDE_STRING_VALUE":
         if current_key == "name":
-            # for token in vocab.keys():
-            #     if (token in func for func in [f["name"] for f in functions_definition]):
-            #         valid_ids.append(vocab[token])
-
-            # for token_id in vocab.values():
-            #     function_name_ids.append(token_id)
-            #     new_token = my_model.decode(function_name_ids)
-            #     if (new_token in func for func in [f["name"] for f in functions_definition]):
-            #         valid_ids.append(token_id)
 
             for token_id in vocab.values():
                 new_prefix = function_name_ids + [token_id]
@@ -104,7 +97,11 @@ def get_valid_tokens(state: str, vocab: dict, expected_type) -> list:
                     if fn_tokens[:len(new_prefix)] == new_prefix:
                         valid_ids.append(token_id)
                         break
-            valid_ids.append(vocab['"'])
+
+            for fn_tokens in function_name_token_lists:
+                    if function_name_ids == fn_tokens:
+                        valid_ids.append(vocab['"'])
+                        break
 
         else:
             for token in vocab.keys():
@@ -119,8 +116,12 @@ def get_valid_tokens(state: str, vocab: dict, expected_type) -> list:
         valid_ids.append(vocab['}'])
 
     elif state == "AFTER_VALUE":
-        valid_ids.append(vocab[','])
-        valid_ids.append(vocab['}'])
+        if not after_name_value:
+            valid_ids.append(vocab[','])
+        else:
+            valid_ids.append(vocab['}'])
+            valid_ids.append(vocab[','])
+
 
     elif state == "INSIDE_SECOND_KEY":
         valid_ids.extend(my_model.encode('parameters"')[0].tolist())
@@ -157,15 +158,31 @@ def update_state(state: str, decoded: str, after_name_value: bool) -> tuple:
     elif state == "INSIDE_STRING_VALUE" and '"' in decoded:
         state = "AFTER_VALUE"
 
+
+
+    # elif state == "AFTER_VALUE":
+    #     if decoded == ",":
+    #         if not after_name_value:
+    #             state = "INSIDE_SECOND_KEY"
+    #             after_name_value = True
+    #         else:
+    #             state = "INSIDE_KEY"
+    #     elif decoded == '}':
+    #         state = "DONE"
+
     elif state == "AFTER_VALUE":
         if decoded == ",":
-            if not after_name_value:
-                state = "INSIDE_SECOND_KEY"
-                after_name_value = True
-            else:
-                state = "INSIDE_KEY"
+            state = "AFTER_COMMA"
         elif decoded == '}':
             state = "DONE"
+
+    elif state == "AFTER_COMMA" and decoded == '"':
+        if not after_name_value:
+            state = "INSIDE_SECOND_KEY"
+            after_name_value = True
+        else:
+            state = "INSIDE_KEY"
+
 
     elif state == "INSIDE_SECOND_KEY" and decoded == '"':
         state = "AFTER_KEY"
@@ -245,5 +262,5 @@ while True:
         break
     print(f"current state: {state}")
 
-result = "{" + my_model.decode(generated_ids) + "}"
+result = my_model.decode(generated_ids)
 print(result)
