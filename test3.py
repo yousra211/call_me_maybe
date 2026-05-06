@@ -4,6 +4,7 @@ import numpy as np
 
 global functions_definition
 global current_key
+global function_name_ids
 
 with open('function_calling_tests.json', 'r') as f:
     data = json.load(f)
@@ -55,6 +56,10 @@ after_name_value = False
 
 def get_valid_tokens(state: str, vocab: dict, expected_type) -> list:
     valid_ids = []
+    function_name_token_lists = [
+        my_model.encode(f["name"])[0].tolist()
+        for f in functions_definition
+    ]
     if state == "START":
         valid_ids.append(vocab['{'])
 
@@ -82,9 +87,25 @@ def get_valid_tokens(state: str, vocab: dict, expected_type) -> list:
 
     elif state == "INSIDE_STRING_VALUE":
         if current_key == "name":
-            for token in vocab.keys():
-                if (token in func for func in [f["name"] for f in functions_definition]):
-                    valid_ids.append(vocab[token])
+            # for token in vocab.keys():
+            #     if (token in func for func in [f["name"] for f in functions_definition]):
+            #         valid_ids.append(vocab[token])
+
+            # for token_id in vocab.values():
+            #     function_name_ids.append(token_id)
+            #     new_token = my_model.decode(function_name_ids)
+            #     if (new_token in func for func in [f["name"] for f in functions_definition]):
+            #         valid_ids.append(token_id)
+
+            for token_id in vocab.values():
+                new_prefix = function_name_ids + [token_id]
+
+                for fn_tokens in function_name_token_lists:
+                    if fn_tokens[:len(new_prefix)] == new_prefix:
+                        valid_ids.append(token_id)
+                        break
+            valid_ids.append(vocab['"'])
+
         else:
             for token in vocab.keys():
                 if not any(c in token for c in ['\n', '\r', '}', '{', ':', ","]):
@@ -133,7 +154,7 @@ def update_state(state: str, decoded: str, after_name_value: bool) -> tuple:
         elif decoded == '{':
             state = "AFTER_OPEN_BRACE"
 
-    elif state == "INSIDE_STRING_VALUE" and decoded == '"':
+    elif state == "INSIDE_STRING_VALUE" and '"' in decoded:
         state = "AFTER_VALUE"
 
     elif state == "AFTER_VALUE":
@@ -222,6 +243,7 @@ while True:
 
     if state == "DONE":
         break
+    print(f"current state: {state}")
 
 result = "{" + my_model.decode(generated_ids) + "}"
 print(result)
