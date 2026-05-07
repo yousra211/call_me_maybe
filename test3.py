@@ -139,7 +139,10 @@ def update_state(state: str, decoded: str, after_name_value: bool) -> tuple:
         state = "AFTER_OPEN_BRACE"
 
     elif state == "AFTER_OPEN_BRACE" and decoded == '"':
-        state = "INSIDE_FIRST_KEY"
+        if not after_name_value:
+            state = "INSIDE_FIRST_KEY"
+        else:
+            state = "INSIDE_KEY"
 
     elif state == "INSIDE_FIRST_KEY" and decoded == '"':
         state = "AFTER_KEY"
@@ -157,18 +160,6 @@ def update_state(state: str, decoded: str, after_name_value: bool) -> tuple:
 
     elif state == "INSIDE_STRING_VALUE" and '"' in decoded:
         state = "AFTER_VALUE"
-
-
-
-    # elif state == "AFTER_VALUE":
-    #     if decoded == ",":
-    #         if not after_name_value:
-    #             state = "INSIDE_SECOND_KEY"
-    #             after_name_value = True
-    #         else:
-    #             state = "INSIDE_KEY"
-    #     elif decoded == '}':
-    #         state = "DONE"
 
     elif state == "AFTER_VALUE":
         if decoded == ",":
@@ -221,7 +212,8 @@ while True:
     if state == "INSIDE_SECOND_KEY":
         current_key = "parameters"
 
-    if state == "AFTER_VALUE" or state == "AFTER_OPEN_BRACE" or (state == "INSIDE_SECOND_KEY" and decoded == '"'):
+    # if state == "AFTER_VALUE" or state == "AFTER_OPEN_BRACE" or (state == "INSIDE_SECOND_KEY" and decoded == '"'):
+    if state == "AFTER_VALUE" or state == "AFTER_OPEN_BRACE":
         current_key_ids = []
 
     if state in ["INSIDE_FIRST_KEY", "INSIDE_SECOND_KEY", "INSIDE_KEY"] and decoded != '"':
@@ -230,7 +222,7 @@ while True:
     if state == "AFTER_KEY":
         current_key = my_model.decode(current_key_ids)
 
-    if state == "INSIDE_STRING_VALUE" and selected_function is None:
+    if state == "INSIDE_STRING_VALUE" and selected_function is None and decoded != '"':
         function_name_ids.append(index_token)
 
     if index_token == eos_token_id:
@@ -245,10 +237,12 @@ while True:
 
     if state == "AFTER_VALUE" and selected_function is None:
         function_name = my_model.decode(function_name_ids)
+        selected_function = next(f for f in functions_definition if f['name'] == function_name)
         print(f"function name: {function_name}")
-        # selected_function = next(f for f in functions_definition if f['name'] == function_name)
-        # param_names = list(selected_function["parameters"].keys())
-        # param_types = {k: v["type"] for k, v in selected_function["parameters"].items()}
+        print(f"selected function: {selected_function}")
+        param_names = list(selected_function["parameters"].keys())
+        param_types = {k: v["type"] for k, v in selected_function["parameters"].items()}
+        print(f"param_types: {param_types}")
 
     if state == "AFTER_COLON":
         if current_key == "name":
