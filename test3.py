@@ -6,6 +6,10 @@ global functions_definition
 global current_key
 global function_name_ids
 global after_name_value
+global current_key_ids
+global parameter_name_token_lists
+global open_brackets
+global used_params
 
 with open('function_calling_tests.json', 'r') as f:
     data = json.load(f)
@@ -26,10 +30,7 @@ You are a function calling assistant. Your only job is to return a JSON object r
 Available functions:
 {functions_text}
 
-Example output format:
-{{"name": "fn_add_numbers", "parameters": {{"a": 1, "b": 2}}}}
-
-Now return the correct JSON for this request: {data[0]['prompt']}
+Now return the correct JSON for this request: {data[3]['prompt']}
 <|im_end|>
 <|im_start|>assistant
 {{"""
@@ -54,13 +55,15 @@ current_key_ids = []
 current_key = None
 expected_type = None
 after_name_value = False
+open_brackets = 0
+used_params = set()
+function_name_token_lists = [
+    my_model.encode(f["name"])[0].tolist()
+    for f in functions_definition
+]
 
 def get_valid_tokens(state: str, vocab: dict, expected_type) -> list:
     valid_ids = []
-    function_name_token_lists = [
-        my_model.encode(f["name"])[0].tolist()
-        for f in functions_definition
-    ]
 
     if state == "START":
         valid_ids.append(vocab['{'])
@@ -127,10 +130,22 @@ def get_valid_tokens(state: str, vocab: dict, expected_type) -> list:
         valid_ids.extend(my_model.encode('parameters"')[0].tolist())
 
     elif state == "INSIDE_KEY":
-        for token in vocab.keys():
-            if all(c.isalnum() or c == '_' for c in token):
-                valid_ids.append(vocab[token])
-        valid_ids.append(vocab['"'])
+
+        for token_id in vocab.values():
+            new_prefix = current_key_ids + [token_id]
+
+            for pn_tokens in parameter_name_token_lists:
+                if pn_tokens[:len(new_prefix)] == new_prefix:
+                    valid_ids.append(token_id)
+                    break
+
+        for pn_tokens in parameter_name_token_lists:
+                if current_key_ids == pn_tokens:
+                    valid_ids.append(vocab['"'])
+                    break
+
+    elif state == "AFTER_CLOSING_BRACE":
+        valid_ids.append(vocab['}'])
 
     return valid_ids
 
@@ -164,8 +179,8 @@ def update_state(state: str, decoded: str, after_name_value: bool) -> tuple:
     elif state == "AFTER_VALUE":
         if decoded == ",":
             state = "AFTER_COMMA"
-        elif decoded == '}':
-            state = "DONE"
+        elif decoded == '}' and open_brackets != 0:
+            state = "AFTER_CLOSING_BRACE"
 
     elif state == "AFTER_COMMA" and decoded == '"':
         if not after_name_value:
@@ -180,9 +195,12 @@ def update_state(state: str, decoded: str, after_name_value: bool) -> tuple:
 
     elif state == "INSIDE_NUMBER_VALUE":
         if decoded == ',':
-            state = "INSIDE_KEY"
-        elif decoded == '}':
-            state = "DONE"
+            state = "AFTER_COMMA"
+        elif decoded == '}' and open_brackets != 0:
+            state = "AFTER_CLOSING_BRACE"
+
+    elif state == "AFTER_CLOSING_BRACE" and open_brackets == 0:
+        state = "DONE"
 
     elif state == "INSIDE_KEY" and decoded == '"':
         state = "AFTER_KEY"
@@ -206,14 +224,19 @@ while True:
     mylist.append(index_token)
     generated_ids.append(index_token)
 
+    if decoded == "{":
+        open_brackets += 1
+
+    if decoded == "}":
+        open_brackets -= 1
+
     if state == "INSIDE_FIRST_KEY":
         current_key = "name"
 
     if state == "INSIDE_SECOND_KEY":
         current_key = "parameters"
 
-    # if state == "AFTER_VALUE" or state == "AFTER_OPEN_BRACE" or (state == "INSIDE_SECOND_KEY" and decoded == '"'):
-    if state == "AFTER_VALUE" or state == "AFTER_OPEN_BRACE":
+    if state == "AFTER_VALUE" or state == "AFTER_OPEN_BRACE" or state == "AFTER_COMMA":
         current_key_ids = []
 
     if state in ["INSIDE_FIRST_KEY", "INSIDE_SECOND_KEY", "INSIDE_KEY"] and decoded != '"':
@@ -221,6 +244,8 @@ while True:
 
     if state == "AFTER_KEY":
         current_key = my_model.decode(current_key_ids)
+        if current_key != "name" and current_key != "parameters":
+            used_params.add(current_key)
 
     if state == "INSIDE_STRING_VALUE" and selected_function is None and decoded != '"':
         function_name_ids.append(index_token)
@@ -238,11 +263,17 @@ while True:
     if state == "AFTER_VALUE" and selected_function is None:
         function_name = my_model.decode(function_name_ids)
         selected_function = next(f for f in functions_definition if f['name'] == function_name)
-        print(f"function name: {function_name}")
-        print(f"selected function: {selected_function}")
+        # print(f"function name: {function_name}")
+        # print(f"selected function: {selected_function}")
         param_names = list(selected_function["parameters"].keys())
         param_types = {k: v["type"] for k, v in selected_function["parameters"].items()}
-        print(f"param_types: {param_types}")
+        # print(f"param_types: {param_types}")
+
+    if selected_function is not None:
+        parameter_name_token_lists = [
+            my_model.encode(name)[0].tolist()
+            for name in param_names if name not in used_params
+        ]
 
     if state == "AFTER_COLON":
         if current_key == "name":
