@@ -10,6 +10,7 @@ global current_key_ids
 global parameter_name_token_lists
 global open_brackets
 global used_params
+global param_names
 
 with open('function_calling_tests.json', 'r') as f:
     data = json.load(f)
@@ -30,7 +31,7 @@ You are a function calling assistant. Your only job is to return a JSON object r
 Available functions:
 {functions_text}
 
-Now return the correct JSON for this request: {data[3]['prompt']}
+Now return the correct JSON for this request: {data[1]['prompt']}
 <|im_end|>
 <|im_start|>assistant
 {{"""
@@ -82,11 +83,11 @@ def get_valid_tokens(state: str, vocab: dict, expected_type) -> list:
             valid_ids.append(vocab['"'])
         elif expected_type == "number":
             for token in vocab.keys():
-                if token.isdigit():
+                if all(c.isdigit() or c.isspace() or c == "-" for c in token):
                     valid_ids.append(vocab[token])
-        elif expected_type == "boolean":
-            valid_ids.append(vocab['f'])
-            valid_ids.append(vocab['t'])
+        # elif expected_type == "boolean":
+        #     valid_ids.append(vocab['f'])
+        #     valid_ids.append(vocab['t'])
         elif expected_type == "object":
             valid_ids.append(vocab['{'])
 
@@ -113,16 +114,15 @@ def get_valid_tokens(state: str, vocab: dict, expected_type) -> list:
 
     elif state == "INSIDE_NUMBER_VALUE":
         for token in vocab.keys():
-            if all(c.isdigit() or c == '.' for c in token):
+            if all(c.isdigit() or c.isspace() or c == "." for c in token):
                 valid_ids.append(vocab[token])
         valid_ids.append(vocab[','])
         valid_ids.append(vocab['}'])
 
     elif state == "AFTER_VALUE":
-        if not after_name_value:
-            valid_ids.append(vocab[','])
-        else:
+        if all(item in used_params for item in param_names):
             valid_ids.append(vocab['}'])
+        else:
             valid_ids.append(vocab[','])
 
 
