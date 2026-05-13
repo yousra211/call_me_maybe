@@ -1,6 +1,9 @@
 import json
 from llm_sdk import llm_sdk
 import numpy as np
+import time
+
+start_time = time.time()
 
 global functions_definition
 global current_key
@@ -11,6 +14,9 @@ global parameter_name_token_lists
 global open_brackets
 global used_params
 global param_names
+global inside_parameters_object
+
+open("function_calling_results.json", "w").close()
 
 with open('function_calling_tests.json', 'r') as f:
     data = json.load(f)
@@ -25,21 +31,8 @@ for fn in functions_definition:
     functions_text += f"- {fn['name']}: {fn['description']}\n"
     functions_text += f"  parameters: {json.dumps(fn['parameters'])}\n"
 
-prompt = f"""<|im_start|>system
-You are a function calling assistant. Your only job is to return a JSON object representing which function to call and with what arguments. Never solve the problem yourself.<|im_end|>
-<|im_start|>user
-Available functions:
-{functions_text}
 
-Now return the correct JSON for this request: {data[1]['prompt']}
-<|im_end|>
-<|im_start|>assistant
-{{"""
-encoded = my_model.encode(prompt)
-mylist = encoded[0].tolist()
 eos_token_id = my_model.encode("<|endoftext|>").tolist()[0]
-
-generated_ids = []
 
 vocab_path = my_model.get_path_to_vocab_file()
 
@@ -49,15 +42,7 @@ with open(vocab_path, 'r') as f:
 # invert it to get id → token
 id_to_token = {v: k for k, v in vocab.items()}
 
-state = "START"
-function_name_ids = []
-selected_function = None
-current_key_ids = []
-current_key = None
-expected_type = None
-after_name_value = False
-open_brackets = 0
-used_params = set()
+
 function_name_token_lists = [
     my_model.encode(f["name"])[0].tolist()
     for f in functions_definition
@@ -85,14 +70,12 @@ def get_valid_tokens(state: str, vocab: dict, expected_type) -> list:
             for token in vocab.keys():
                 if all(c.isdigit() or c.isspace() or c == "-" for c in token):
                     valid_ids.append(vocab[token])
-        # elif expected_type == "boolean":
-        #     valid_ids.append(vocab['f'])
-        #     valid_ids.append(vocab['t'])
+
         elif expected_type == "object":
             valid_ids.append(vocab['{'])
 
     elif state == "INSIDE_STRING_VALUE":
-        if current_key == "name":
+        if current_key == "name" and not inside_parameters_object:
 
             for token_id in vocab.values():
                 new_prefix = function_name_ids + [token_id]
@@ -173,7 +156,7 @@ def update_state(state: str, decoded: str, after_name_value: bool) -> tuple:
         elif decoded == '{':
             state = "AFTER_OPEN_BRACE"
 
-    elif state == "INSIDE_STRING_VALUE" and '"' in decoded:
+    elif state == "INSIDE_STRING_VALUE" and decoded.endswith('"') and not decoded.endswith('\\"'):
         state = "AFTER_VALUE"
 
     elif state == "AFTER_VALUE":
@@ -206,86 +189,118 @@ def update_state(state: str, decoded: str, after_name_value: bool) -> tuple:
         state = "AFTER_KEY"
 
     return state, after_name_value
+for test_case in data:
+    state = "START"
+    function_name_ids = []
+    generated_ids = []
+    selected_function = None
+    current_key_ids = []
+    current_key = None
+    expected_type = None
+    after_name_value = False
+    parameter_name_token_lists = []
+    open_brackets = 0
+    used_params = set()
+    inside_parameters_object = False
+    prompt = f"""<|im_start|>system
+    You are a function calling assistant. Your only job is to return a JSON object representing which function to call and with what arguments. Never solve the problem yourself.<|im_end|>
+    <|im_start|>user
+    Available functions:
+    {functions_text}
 
-while True:
-    logits = my_model.get_logits_from_input_ids(mylist)
+    Now return the correct JSON for this request: {test_case['prompt']}
+    <|im_end|>
+    <|im_start|>assistant
+    {{"""
+    encoded = my_model.encode(prompt)
+    mylist = encoded[0].tolist()
+    while True:
+        logits = my_model.get_logits_from_input_ids(mylist)
 
-    # 1. find valid token IDs based on current state
-    valid_ids = get_valid_tokens(state, vocab, expected_type)
+        # 1. find valid token IDs based on current state
+        valid_ids = get_valid_tokens(state, vocab, expected_type)
 
-    # 2. kill invalid tokens
-    for i in range(len(logits)):
-        if i not in valid_ids:
-            logits[i] = float('-inf')
+        # 2. kill invalid tokens
+        for i in range(len(logits)):
+            if i not in valid_ids:
+                logits[i] = float('-inf')
 
-    index_token = int(np.argmax(logits))
-    decoded = my_model.decode([index_token])
+        index_token = int(np.argmax(logits))
+        decoded = my_model.decode([index_token])
 
-    mylist.append(index_token)
-    generated_ids.append(index_token)
+        mylist.append(index_token)
+        generated_ids.append(index_token)
 
-    if decoded == "{":
-        open_brackets += 1
+        if decoded == "{":
+            open_brackets += 1
 
-    if decoded == "}":
-        open_brackets -= 1
+        if decoded == "}":
+            open_brackets -= 1
 
-    if state == "INSIDE_FIRST_KEY":
-        current_key = "name"
+        if state == "INSIDE_FIRST_KEY":
+            current_key = "name"
 
-    if state == "INSIDE_SECOND_KEY":
-        current_key = "parameters"
+        if state == "INSIDE_SECOND_KEY":
+            current_key = "parameters"
+            inside_parameters_object = True
 
-    if state == "AFTER_VALUE" or state == "AFTER_OPEN_BRACE" or state == "AFTER_COMMA":
-        current_key_ids = []
+        if state == "AFTER_VALUE" or state == "AFTER_OPEN_BRACE" or state == "AFTER_COMMA":
+            current_key_ids = []
 
-    if state in ["INSIDE_FIRST_KEY", "INSIDE_SECOND_KEY", "INSIDE_KEY"] and decoded != '"':
-        current_key_ids.append(index_token)
+        if state in ["INSIDE_FIRST_KEY", "INSIDE_SECOND_KEY", "INSIDE_KEY"] and decoded != '"':
+            current_key_ids.append(index_token)
 
-    if state == "AFTER_KEY":
-        current_key = my_model.decode(current_key_ids)
-        if current_key != "name" and current_key != "parameters":
-            used_params.add(current_key)
+        if state == "AFTER_KEY":
+            current_key = my_model.decode(current_key_ids)
+            if after_name_value and current_key != "parameters":
+                used_params.add(current_key)
 
-    if state == "INSIDE_STRING_VALUE" and selected_function is None and decoded != '"':
-        function_name_ids.append(index_token)
+        if state == "INSIDE_STRING_VALUE" and selected_function is None and decoded != '"':
+            function_name_ids.append(index_token)
 
-    if index_token == eos_token_id:
-        break
-    print(f"Generated token: '{decoded}'")
-    
-    if state == "AFTER_COLON":
-        print(f"current_key: {current_key}")
-        print(f"expected_type: {expected_type}")
+        if index_token == eos_token_id:
+            break
+        print(f"Generated token: '{decoded}'")
+        
+        if state == "AFTER_COLON":
+            print(f"current_key: {current_key}")
+            print(f"expected_type: {expected_type}")
 
-    state, after_name_value = update_state(state, decoded, after_name_value)
+        state, after_name_value = update_state(state, decoded, after_name_value)
 
-    if state == "AFTER_VALUE" and selected_function is None:
-        function_name = my_model.decode(function_name_ids)
-        selected_function = next(f for f in functions_definition if f['name'] == function_name)
-        # print(f"function name: {function_name}")
-        # print(f"selected function: {selected_function}")
-        param_names = list(selected_function["parameters"].keys())
-        param_types = {k: v["type"] for k, v in selected_function["parameters"].items()}
-        # print(f"param_types: {param_types}")
+        if state == "AFTER_VALUE" and selected_function is None:
+            function_name = my_model.decode(function_name_ids)
+            selected_function = next(f for f in functions_definition if f['name'] == function_name)
+            # print(f"function name: {function_name}")
+            # print(f"selected function: {selected_function}")
+            param_names = list(selected_function["parameters"].keys())
+            param_types = {k: v["type"] for k, v in selected_function["parameters"].items()}
+            # print(f"param_types: {param_types}")
 
-    if selected_function is not None:
-        parameter_name_token_lists = [
-            my_model.encode(name)[0].tolist()
-            for name in param_names if name not in used_params
-        ]
+        if selected_function is not None:
+            parameter_name_token_lists = [
+                my_model.encode(name)[0].tolist()
+                for name in param_names if name not in used_params
+            ]
 
-    if state == "AFTER_COLON":
-        if current_key == "name":
-            expected_type = "string"
-        elif current_key == "parameters":
-            expected_type = "object"
-        elif selected_function and current_key in param_types:
-            expected_type = param_types[current_key]
+        if state == "AFTER_COLON":
+            if current_key == "name":
+                expected_type = "string"
+            elif current_key == "parameters":
+                expected_type = "object"
+            elif selected_function and current_key in param_types:
+                expected_type = param_types[current_key]
 
-    if state == "DONE":
-        break
-    print(f"current state: {state}")
+        if state == "DONE":
+            break
+        print(f"current state: {state}")
 
-result = my_model.decode(generated_ids)
-print(result)
+    result = my_model.decode(generated_ids)
+    print(result)
+    with open("function_calling_results.json", "a") as f:
+        f.write(result + "\n")
+
+
+    end_time = time.time()
+
+    print(f"Execution time: {end_time - start_time} seconds")
